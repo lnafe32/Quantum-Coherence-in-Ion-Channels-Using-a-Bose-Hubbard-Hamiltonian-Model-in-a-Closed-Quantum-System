@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantum Coherence in Ion Channels</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #fdfbf7; color: #333; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { max-width: 800px; width: 100%; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { font-size: 1.5em; text-align: center; margin-top: 0; color: #2c3e50; }
+        .controls { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 20px; padding: 15px; background: #f4f4f4; border-radius: 8px; justify-content: space-between; align-items: center; }
+        .control-group { display: flex; flex-direction: column; flex: 1; min-width: 150px; }
+        label { font-weight: bold; margin-bottom: 5px; font-size: 0.9em; }
+        .btn-group { display: flex; gap: 10px; }
+        button { padding: 8px 16px; font-size: 1em; border: none; border-radius: 4px; cursor: pointer; background: #2196F3; color: white; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #1976D2; }
+        button.pause { background: #FF9800; }
+        button.pause:hover { background: #F57C00; }
+        button.reset { background: #f44336; }
+        button.reset:hover { background: #d32f2f; }
+        .visualizer { position: relative; width: 100%; height: 200px; background: #fafafa; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: center; align-items: center; }
+        canvas { display: block; }
+        .chart-container { position: relative; height: 250px; width: 100%; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Quantum Coherence Ion Channel Simulator</h1>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="hopping">Hopping Strength (J): <span id="hopping-val">1.0</span></label>
+                <input type="range" id="hopping" min="0.1" max="5.0" step="0.1" value="1.0">
+            </div>
+            <div class="control-group">
+                <label for="speed">Simulation Speed: <span id="speed-val">1.0x</span></label>
+                <input type="range" id="speed" min="0.1" max="3.0" step="0.1" value="1.0">
+            </div>
+            <div class="btn-group">
+                <button id="playPauseBtn">Pause</button>
+                <button id="resetBtn" class="reset">Reset</button>
+            </div>
+        </div>
+
+        <div class="visualizer">
+            <canvas id="latticeCanvas" width="760" height="200"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="probChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // Physics State
+        let numSites = 5;
+        let state = [];
+        let isPlaying = true;
+        let lastTime = 0;
+        
+        function initState() {
+            state = [];
+            for(let i=0; i<numSites; i++) {
+                state.push({ r: i === 0 ? 1 : 0, i: 0 }); // 100% prob at site 0
+            }
+        }
+        initState();
+
+        // UI Elements
+        const hoppingSlider = document.getElementById('hopping');
+        const speedSlider = document.getElementById('speed');
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const latticeCanvas = document.getElementById('latticeCanvas');
+        const ctxLattice = latticeCanvas.getContext('2d');
+        
+        // Chart Setup
+        const ctxChart = document.getElementById('probChart').getContext('2d');
+        const probChart = new Chart(ctxChart, {
+            type: 'bar',
+            data: {
+                labels: ['Site 1 (Entry)', 'Site 2', 'Site 3', 'Site 4', 'Site 5 (Exit)'],
+                datasets: [{
+                    label: 'Probability Density |ψ|²',
+                    data: [1, 0, 0, 0, 0],
+                    backgroundColor: 'rgba(33, 150, 243, 0.7)',
+                    borderColor: 'rgba(33, 150, 243, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    y: { beginAtZero: true, max: 1.0, title: { display: true, text: 'Probability' } }
+                }
+            }
+        });
+
+        // Controls Logic
+        hoppingSlider.addEventListener('input', (e) => document.getElementById('hopping-val').innerText = e.target.value);
+        speedSlider.addEventListener('input', (e) => document.getElementById('speed-val').innerText = e.target.value + 'x');
+        
+        playPauseBtn.addEventListener('click', () => {
+            isPlaying = !isPlaying;
+            playPauseBtn.innerText = isPlaying ? 'Pause' : 'Play';
+            playPauseBtn.className = isPlaying ? 'pause' : '';
+            if(isPlaying) requestAnimationFrame(loop);
+        });
+
+        resetBtn.addEventListener('click', () => {
+            initState();
+            drawLattice();
+            updateChart();
+            if(!isPlaying) {
+                isPlaying = true;
+                playPauseBtn.innerText = 'Pause';
+                playPauseBtn.className = 'pause';
+                lastTime = performance.now();
+                requestAnimationFrame(loop);
+            }
+        });
+
+        // Physics Engine (Schrodinger Equation Integrator)
+        function evolve(dt) {
+            const J = parseFloat(hoppingSlider.value);
+            // Smaller internal steps for stability
+            const substeps = 10;
+            const h = dt / substeps;
+            
+            for(let s=0; s<substeps; s++) {
+                let dState = [];
+                for(let n=0; n<numSites; n++) {
+                    let r_prev = (n > 0) ? state[n-1].r : 0;
+                    let i_prev = (n > 0) ? state[n-1].i : 0;
+                    let r_next = (n < numSites-1) ? state[n+1].r : 0;
+                    let i_next = (n < numSites-1) ? state[n+1].i : 0;
+                    
+                    // dc_n/dt = i * J * (c_{n-1} + c_{n+1})
+                    dState.push({
+                        r: -J * (i_prev + i_next),
+                        i:  J * (r_prev + r_next)
+                    });
+                }
+                
+                let norm = 0;
+                for(let n=0; n<numSites; n++) {
+                    state[n].r += dState[n].r * h;
+                    state[n].i += dState[n].i * h;
+                    norm += state[n].r**2 + state[n].i**2;
+                }
+                
+                // Enforce Unitarity (Normalize)
+                norm = Math.sqrt(norm);
+                for(let n=0; n<numSites; n++) {
+                    state[n].r /= norm;
+                    state[n].i /= norm;
+                }
+            }
+        }
+
+        // Visualizer Drawing
+        function drawLattice() {
+            ctxLattice.clearRect(0, 0, latticeCanvas.width, latticeCanvas.height);
+            
+            const padding = 100;
+            const spacing = (latticeCanvas.width - 2 * padding) / (numSites - 1);
+            const cy = latticeCanvas.height / 2;
+
+            // Draw connections
+            ctxLattice.beginPath();
+            ctxLattice.moveTo(padding, cy);
+            ctxLattice.lineTo(latticeCanvas.width - padding, cy);
+            ctxLattice.strokeStyle = '#ccc';
+            ctxLattice.lineWidth = 4;
+            ctxLattice.stroke();
+
+            // Draw nodes
+            for(let i=0; i<numSites; i++) {
+                const cx = padding + i * spacing;
+                const prob = state[i].r**2 + state[i].i**2;
+                
+                // Node background
+                ctxLattice.beginPath();
+                ctxLattice.arc(cx, cy, 25, 0, 2 * Math.PI);
+                ctxLattice.fillStyle = '#fff';
+                ctxLattice.fill();
+                ctxLattice.lineWidth = 3;
+                ctxLattice.strokeStyle = '#2196F3';
+                ctxLattice.stroke();
+
+                // Probability density glow/fill
+                if (prob > 0.01) {
+                    ctxLattice.beginPath();
+                    ctxLattice.arc(cx, cy, 20 * prob + 5, 0, 2 * Math.PI);
+                    ctxLattice.fillStyle = `rgba(33, 150, 243, ${prob + 0.2})`;
+                    ctxLattice.fill();
+                }
+            }
+        }
+
+        function updateChart() {
+            let probs = state.map(s => s.r**2 + s.i**2);
+            probChart.data.datasets[0].data = probs;
+            probChart.update();
+        }
+
+        // Main Loop
+        function loop(timestamp) {
+            if (!isPlaying) return;
+            
+            if (!lastTime) lastTime = timestamp;
+            let dt = (timestamp - lastTime) / 1000; // seconds
+            lastTime = timestamp;
+
+            // Cap dt to avoid blowups on tab switch
+            if(dt > 0.1) dt = 0.1; 
+
+            const speed = parseFloat(speedSlider.value);
+            evolve(dt * speed);
+            
+            drawLattice();
+            updateChart();
+            
+            requestAnimationFrame(loop);
+        }
+
+        // Start
+        playPauseBtn.className = 'pause';
+        requestAnimationFrame((t) => { lastTime = t; loop(t); });
+    </script>
+</body>
+</html>
